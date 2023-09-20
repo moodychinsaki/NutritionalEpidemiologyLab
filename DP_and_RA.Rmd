@@ -1,0 +1,739 @@
+---
+title: "RA diet pattern"
+author: "Michele Bartesaghi"
+date: '2022-12-21'
+output: html_document
+---
+#Libraries
+```{r}
+library(tidyverse, warn.conflicts = FALSE)
+library(dplyr, warn.conflicts = FALSE)
+library(readr, warn.conflicts = FALSE)
+library(gghighlight, warn.conflicts = FALSE)
+library(rrpack, warn.conflicts = FALSE)
+library(factoextra, warn.conflicts = FALSE)
+```
+
+
+#data
+```{r setup, include=FALSE}
+d <- tot_bl_DSE
+#rm(tot_bl_DSE)
+```
+
+
+#PRE-PROCESSING
+```{r}
+row.names(d) <- NULL
+
+#unique identifier and patients info first
+d <- d %>% select(c("ID","SESSO","ALTEZZA","PESO","BMI","SCOLORITA","CITTADINANZA",
+                    "Fumatore",
+                    "FR","ETA_ESORDIO","ETA_VISITA","DURATA_MALATTIA",
+                    "DAS28","SDAI"), 
+                  everything()) %>% select(-c("code","Numero.univoco"))
+#BMI contains info about height and weight
+
+#fix citizenship
+d$CITTADINANZA <- ifelse(d$CITTADINANZA != "italiana", tolower(as.character(d$altro_cittadinanza)), "italiana")
+d <- d %>% select(-c("altro_cittadinanza"))
+
+#rationale:
+#we are interested mostly in the presence (or absence of the disease) 
+# FR contains info about rheumatoid_factor and ACPA which combined say whether the patient has the disease or not
+# both 0: mild disease
+# both 1: no disease
+# one 0 one 1: severe disease
+#DAS28 and SDAI are two indexes measuring the severity and they contain the previous attributes
+#simplified analysis, but less detailed with these 2 composite indexes
+d_alc <- d %>% select(c("vino_rosso":"liquori"))
+d <- d %>% select(-c("tempo":"GHPAZIENTE"))
+
+
+#remove variables related to pilot study (drug+air pollution) about air pollution (we focus on drugs+diet)
+d <- d %>% select(-c("GH_MEDICO":"Città_residenza", "Occupazione":"Quantità_animali", "Comune_nascita":"Traffico"))
+
+#remove the diseases which are not a confounding factor (prevalence)
+#Inflamatory Bowel Disease
+#Gastritis and esophagitis -> MRGE
+#table(d$Condivisione_fumo_passivo) just 16 TRUE VALUES -> discarding the variable, insignificant additional info
+#table(d$Sigaretta_elettronica) just 1 TRUE VALUE -> discarding the variable, insignificant additional info
+d <- d %>% select(-c("Numero_sigarette":"Tiroidite", "DANNORADIO", ))
+
+#remove answers to the questionnaire since we are using their numeric translation
+d <- d %>% select(-c("carni_rosse":"integratori_2_spec"))
+
+#remove useless info (columns with a prevalence of NAs; they are like this bc irrelevant)
+d <- d %>% select(-c("STEROIDIDOSE", "Glicemia":"Omocisteina"))
+
+#round age
+d$ETA_ESORDIO <- round(d$ETA_ESORDIO)
+d$ETA_VISITA <- round(d$ETA_VISITA)
+d$DURATA_MALATTIA <- round(d$DURATA_MALATTIA)
+
+d$FR <- as.factor(d$FR)
+
+#what is otherpoli?
+
+#we are left with 304 variables out of 499
+```
+
+#manageable
+```{r}
+#patients info
+d_pat <- d %>% select("ID":"SDAI")
+
+# #nutrients dataset
+d_nutr <- d %>% select(c("ID":"Zuccheri.solubili..g..", "Fibra.solubile..g..":"Alcol..g..","Sodio..mg..":"Saturi.totali.....", "Monoinsaturi.totali.....", "Polinsaturi.totali.....","C20.5" ,"C22.6", "C18.2" ,"C18.3","C20.4" , "Vitamina.d..µg.":"Phenolic.acids", "Lignans")) 
+d_nutr <- d_nutr %>% select(-c("Acqua..g..", "Alcol..g..", "Polinsaturi.totali....."))
+#d_others <- d %>% select(-c("Others":"Biochanin.A"))
+#C20.5, C22.6 are omega3 fatty acids
+#C20.4 (arachidonic), "C18.2" (linoleic), "C18.3" (linolenic) omega6
+
+
+# #single foods dataset
+d_food <- d %>%  select(c("ID":"SDAI","vf_carni_rosse":"vf_spremute_frullati_confezionati"))
+# 
+# #food groups dataset
+d_groups <- d %>%  select(c("ID":"SDAI","vf_fast_food":"vf_other_cheese"))
+d_groups$vf_fast_food <- d_groups$vf_fast_food$`vf_fast food`
+d_groups$vf_formaggio_spalmabile <- d_groups$vf_formaggio_spalmabile$`vf_formaggio spalmabile`
+d_groups$vf_redmeat <- d_groups$vf_redmeat$`vf_fast food`
+d_groups$vf_other_cheese <- d_groups$vf_other_cheese$`vf_formaggio spalmabile`
+#sounds strange to me that in the redmeat group (dataframe) there's only a column called fast food
+# 
+# #diseases
+ d_dis <- d %>%  select(c("ID":"SDAI","MRGE":"IRC"))
+# 
+# #drugs
+# d_drugs <- d %>%  select(c("ID":"SDAI","STEROIDI":"anakinra_passato"))
+
+#use joins from this point
+rm(tot_bl_DSE)
+```
+
+
+
+
+#EXPLORATORY ANALYSIS
+```{r}
+#colnames(d)
+
+count = 0
+for (i in 1:length(d)){
+  count = ifelse(d$FR== 1,1,0)}
+sev <- sum(count)/length(d)  #196 severe cases, approx. 64.5%  
+
+p <- d[,c(3:5,10:12)]
+pl <-p %>% gather(variable,values,1:6)
+ggplot(pl)+
+  geom_boxplot(aes(x=variable,y=values), fill="Salmon") + 
+  facet_wrap(~variable,ncol=3,scales="free") + 
+  theme_minimal()+
+  theme(strip.text.x = element_blank(),
+        text = element_text(size=12))
+
+# summary(boxplot.stats(p$ALTEZZA))
+# summary(boxplot.stats(p$PESO))
+# summary(boxplot.stats(p$BMI))
+# summary(boxplot.stats(p$ETA_ESORDIO))
+# summary(boxplot.stats(p$ETA_VISITA))
+# summary(boxplot.stats(p$DURATA_MALATTIA))
+```
+
+```{r}
+summary(d_pat)
+
+```
+
+#gender
+```{r}
+male_perc <- nrow(d_pat %>% select(SESSO) %>% 
+                    filter(SESSO == "Maschio"))/length(d_pat$SESSO)*100
+female_perc <- nrow(d_pat %>% select(SESSO) %>% 
+                      filter(SESSO == "Femmina"))/length(d_pat$SESSO)*100
+
+pgen <- d_pat %>%  
+  count(SESSO) %>% 
+  mutate("perc" = round(c(female_perc,male_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(SESSO)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=SESSO)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",fill= "Sex", title="Sex")+
+  theme_minimal()+ # remove background, grid, numeric labels
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+
+#tremendous prevalence of females
+rm(pgen)
+```
+
+#age distribution
+```{r}
+#min(d_pat$ETA_VISITA)  21
+#max(d_pat$ETA_VISITA)  91
+d_pat$age_group <- cut(d_pat$ETA_VISITA, 
+                       breaks = c(20,30,40,50,60,70,80,90,100), 
+                       labels = c("20","30","40","50","60","70","80","90"))
+
+ggplot(d_pat,aes(x=age_group, fill=SESSO))+
+  geom_bar(col="black")+
+  facet_wrap(.~SESSO)+
+  stat_count(aes(y=after_stat(count), label=after_stat(count)), vjust=-0.5,geom="text", col="black", size=3.5)+
+  labs(x="Age Group", y = "Count", title="Age distribution", fill= "Sex")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+#highest incidence in 50s in both groups
+```
+
+#FR
+```{r}
+#table(d_pat$FR)  0:169, 1:196
+severe_perc <- nrow(d_pat %>% select(FR) %>% 
+                    filter(FR == 1))/length(d_pat$FR)*100
+nonsev_perc <- nrow(d_pat %>% select(FR) %>% 
+                    filter(FR == 0))/length(d_pat$FR)*100
+
+pgen <- d_pat %>%  
+  count(FR) %>% 
+  mutate("perc" = round(c(nonsev_perc,severe_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(FR)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=FR)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",title="Severe vs non severe")+
+  theme_minimal()+ 
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+
+ggplot(d_pat, aes(x=DAS28))+
+  geom_histogram(col = "black", fill="salmon")
+```
+
+#bmi
+```{r}
+d_pat$bmi_cat <- ifelse(d_pat$BMI<18.5,"Underweight", 
+                        ifelse(d_pat$BMI>=18.5 & d_pat$bmi <=24.9,"Healthy BMI",  
+                               ifelse(d_pat$BMI > 24.9 & d_pat$bmi<=29.99,"Overweight",  
+                                      ifelse(d_pat$BMI > 30 & d_pat$bmi<=39.9, "Obese",
+                                             ifelse(d_pat$BMI > 40, "Extremely Obese", d_pat$BMI)))))
+table(d_pat$bmi_cat)
+
+ggplot(d_pat, aes(x=BMI, fill= FR))+
+  geom_histogram(col="black", alpha=0.9)+
+  scale_fill_brewer(label=c("no","yes"),palette="Set2")+
+  labs(x=" ", fill="Rheumatoid Factor", title="BMI")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))
+```
+
+#education
+```{r}
+table(d_pat$SCOLORITA)  #4% unavailable
+
+ggplot(d_pat, aes(x=SCOLORITA, fill= FR))+
+  geom_bar(col="black", alpha=0.9)+
+  scale_fill_brewer(label=c("no","yes"),palette="Set2")+
+  labs(x=" ", fill="Rheumatoid Factor", title="Education level")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))
+
+ggplot(d_pat, aes(x=ETA_VISITA, fill= SCOLORITA))+
+  geom_histogram(col="black", alpha=0.9)+
+  scale_fill_brewer(label=c("NA", "Primary", "Middle", "High", "University"), palette="Set2")+
+  labs(x=" ", fill="Education", title="Primary school education according to age")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5)) +
+  gghighlight(SCOLORITA == c("elementari"))+
+   facet_wrap(~ unique(SCOLORITA))
+
+#no correlation between disease severity and education. The point is: older people
+#higher chance of developing severe disease and higher chance of completing only primary school
+```
+
+#alcohol
+```{r}
+table(d_alc$vino_rosso)
+table(d_alc$vino_bianco)
+table(d_alc$birra)
+table(d_alc$liquori)
+
+d_alc <- as.data.frame(c(d_pat,d_alc))
+
+ggplot(d_alc, aes(x=birra, fill= FR))+
+  geom_bar(col="black", alpha=0.9)+
+  scale_fill_brewer(label=c("no","yes"),palette="Set2")+
+  labs(x=" ", fill="Rheumatoid Factor", title="Beer")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5),
+        axis.text.x = element_text(size= 9, angle = 20))
+
+#no significance
+```
+
+#smoking
+```{r}
+table(d_pat$Fumatore)  
+
+ggplot(d_pat, aes(x=Fumatore, fill= FR))+
+  geom_bar(col="black", alpha=0.9)+
+  scale_fill_brewer(label=c("no","yes"),palette="Set2")+
+  labs(x=" ", fill="Rheumatoid Factor", title="Smoking status")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))
+
+```
+
+```{r}
+# table(d_pat$Fumatore) 3 missing: prevalence of non/ex-smokers
+ggplot(d_pat, aes(x=DAS28, fill= Fumatore))+
+  geom_histogram(col="black", alpha=0.9)+
+  scale_fill_brewer(palette="Set2")+
+  labs(x=" ", fill="Smoking status", title="DAS28")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))
+
+
+ggplot(d_pat, aes(x=SDAI, fill= Fumatore))+
+  geom_histogram(col="black", alpha=0.9)+
+  scale_fill_brewer(palette="Set2")+
+  labs(x=" ", fill="Smoking status", title="SDAI")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))#+
+#  gghighlight(d_pat$SDAI > 15) 
+
+#we excluded the alcohol because we'll check it among single food etc.
+#prevalence of smokers just for  a very specific value of sdai (no correlation)
+```
+#diseases
+```{r}
+summary(d_dis)
+
+y_perc <- nrow(d_dis %>% select(MRGE) %>% 
+                    filter(MRGE == "VERO"))/length(d_dis$MRGE)*100
+no_perc <- nrow(d_dis %>% select(MRGE) %>% 
+                      filter(MRGE == "FALSO"))/length(d_dis$MRGE)*100
+
+pgen <- d_dis %>%  
+  count(MRGE) %>% 
+  mutate("perc" = round(c(no_perc,y_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(MRGE)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=MRGE)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",fill= "MRGE", title="MRGE")+
+  theme_minimal()+ # remove background, grid, numeric labels
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+
+# ggplot(d_dis, aes(x=DAS28, fill= MRGE))+
+#   geom_histogram(col="black", alpha=0.9)+
+#   scale_fill_brewer(palette="Set2")+
+#   labs(x=" ", fill="MRGE", title="DAS28")+
+#   theme_minimal()+
+#   theme(plot.title= element_text(face = "bold", hjust=0.5))
+#quite irrelevant, <20% with MRGE
+
+###############
+y_perc <- nrow(d_dis %>% select(IBD) %>% 
+                    filter(IBD == "VERO"))/length(d_dis$IBD)*100
+no_perc <- nrow(d_dis %>% select(IBD) %>% 
+                      filter(IBD == "FALSO"))/length(d_dis$IBD)*100
+
+pgen <- d_dis %>%  
+  count(IBD) %>% 
+  mutate("perc" = round(c(no_perc,y_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(IBD)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=IBD)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",fill= "IBD", title="IBD")+
+  theme_minimal()+ # remove background, grid, numeric labels
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+
+# ggplot(d_dis, aes(x=DAS28, fill= IBD))+
+#   geom_histogram(col="black", alpha=0.9)+
+#   scale_fill_brewer(palette="Set2")+
+#   labs(x=" ", fill="IBD", title="DAS28")+
+#   theme_minimal()+
+#   theme(plot.title= element_text(face = "bold", hjust=0.5))
+#irrelevant, nobody has ibd
+
+######################
+#GASTRITIS
+
+y_perc <- nrow(d_dis %>% select(GASTRITE) %>% 
+                    filter(GASTRITE == "VERO"))/length(d_dis$GASTRITE)*100
+no_perc <- nrow(d_dis %>% select(GASTRITE) %>% 
+                      filter(GASTRITE == "FALSO"))/length(d_dis$GASTRITE)*100
+
+pgen <- d_dis %>%  
+  count(GASTRITE) %>% 
+  mutate("perc" = round(c(no_perc,y_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(GASTRITE)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=GASTRITE)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",fill= "GASTRITE", title="GASTRITE")+
+  theme_minimal()+ # remove background, grid, numeric labels
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+
+ggplot(d_dis, aes(x=DAS28, fill= GASTRITE))+
+  geom_histogram(col="black", alpha=0.9)+
+  scale_fill_brewer(palette="Set2")+
+  labs(x=" ", fill="GASTRITE", title="DAS28")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))
+
+############
+#HYPERTENSION
+
+y_perc <- nrow(d_dis %>% select(IPERTENSIONE) %>% 
+                    filter(IPERTENSIONE == "VERO"))/length(d_dis$IPERTENSIONE)*100
+no_perc <- nrow(d_dis %>% select(IPERTENSIONE) %>% 
+                      filter(IPERTENSIONE == "FALSO"))/length(d_dis$IPERTENSIONE)*100
+
+pgen <- d_dis %>%  
+  count(IPERTENSIONE) %>% 
+  mutate("perc" = round(c(no_perc,y_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(IPERTENSIONE)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=IPERTENSIONE)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",fill= "IPERTENSIONE", title="IPERTENSIONE")+
+  theme_minimal()+ # remove background, grid, numeric labels
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+
+ggplot(d_dis, aes(x=DAS28, fill= IPERTENSIONE))+
+  geom_histogram(col="black", alpha=0.9)+
+  scale_fill_brewer(palette="Set2")+
+  labs(x=" ", fill="IPERTENSIONE", title="DAS28")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))
+############
+#ESOFAGITE
+
+y_perc <- nrow(d_dis %>% select(ESOFAGITE) %>% 
+                    filter(ESOFAGITE == "VERO"))/length(d_dis$ESOFAGITE)*100
+no_perc <- nrow(d_dis %>% select(ESOFAGITE) %>% 
+                      filter(ESOFAGITE == "FALSO"))/length(d_dis$ESOFAGITE)*100
+
+pgen <- d_dis %>%  
+  count(ESOFAGITE) %>% 
+  mutate("perc" = round(c(no_perc,y_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(ESOFAGITE)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=ESOFAGITE)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",fill= "ESOFAGITE", title="ESOFAGITE")+
+  theme_minimal()+ # remove background, grid, numeric labels
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+############
+#DM
+
+y_perc <- nrow(d_dis %>% select(DM) %>% 
+                    filter(DM == "VERO"))/length(d_dis$DM)*100
+no_perc <- nrow(d_dis %>% select(DM) %>% 
+                      filter(DM == "FALSO"))/length(d_dis$DM)*100
+
+pgen <- d_dis %>%  
+  count(DM) %>% 
+  mutate("perc" = round(c(no_perc,y_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(DM)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=DM)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",fill= "DM", title="DM")+
+  theme_minimal()+ # remove background, grid, numeric labels
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+##########
+#CARDIOPATIA
+
+y_perc <- nrow(d_dis %>% select(CARDIOPATIA) %>% 
+                    filter(CARDIOPATIA == "VERO"))/length(d_dis$CARDIOPATIA)*100
+no_perc <- nrow(d_dis %>% select(CARDIOPATIA) %>% 
+                      filter(CARDIOPATIA == "FALSO"))/length(d_dis$CARDIOPATIA)*100
+
+pgen <- d_dis %>%  
+  count(CARDIOPATIA) %>% 
+  mutate("perc" = round(c(no_perc,y_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(CARDIOPATIA)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=CARDIOPATIA)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",fill= "CARDIOPATIA", title="CARDIOPATIA")+
+  theme_minimal()+ # remove background, grid, numeric labels
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+##########
+#IRC
+
+y_perc <- nrow(d_dis %>% select(IRC) %>% 
+                    filter(IRC == "VERO"))/length(d_dis$IRC)*100
+no_perc <- nrow(d_dis %>% select(IRC) %>% 
+                      filter(IRC == "FALSO"))/length(d_dis$IRC)*100
+
+pgen <- d_dis %>%  
+  count(IRC) %>% 
+  mutate("perc" = round(c(no_perc,y_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(IRC)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=IRC)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",fill= "IRC", title="IRC")+
+  theme_minimal()+ # remove background, grid, numeric labels
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+```
+
+#das
+```{r}
+#DAS28 0-10 (clinically helpful to measure the improvement)
+nrow(d_pat %>% filter(DAS28 < 2.6))+ #227 REMISSION
+nrow(d_pat %>% filter( DAS28 >= 2.6 & DAS28 <= 3.2))+ #60 LOW
+nrow(d_pat %>% filter(DAS28 > 3.2 & DAS28 <= 5.1 ))+ #64 MODERATE
+nrow(d_pat %>% filter(DAS28 > 5.1)) #14 HIGH
+
+
+#https://pubmed.ncbi.nlm.nih.gov/28255449/
+#Conclusions We have shown that a DAS28-CRP of 4.6 corresponds to 5.1 for DAS28-ESR. Since this is substantially lower than the DAS28-ESR cut-off of 5.1, using 5.1 as the cut-off for DAS28-CRP underestimates disease activity in RA.
+
+#compared with prof word document it appears to use das-esr 
+#https://www.msdmanuals.com/medical-calculators/RheumatoidArthritisDAS28-it.htm
+```
+
+#sdai
+```{r}
+#SDAI 0-100
+nrow(d_pat %>% filter(SDAI <= 3.3))+ #108 REMISSION
+nrow(d_pat %>% filter( SDAI > 3.3 & SDAI <= 11))+ #155 LOW
+nrow(d_pat %>% filter(SDAI > 11 & SDAI <= 26 ))+ #81 MODERATE
+nrow(d_pat %>% filter(SDAI > 26)) #21 HIGH
+#https://www.rheumatology.org/Portals/0/Files/SDAI%20Form.pdf
+```
+
+
+
+
+
+#FACTOR ANALYSIS
+```{r}
+# library(corrplot)
+# 
+# cordata <- cor(d_nutr[,15:48])
+# corrplot(cordata, "color", type = "upper")
+
+#d_nutr[,15:48] <- log(d_nutr[15:48])
+
+#the purpose of a rotation is to produce factors with a mix of high and low loadings and few moderate-sized loadings. 
+prova_varimax <- factanal(d_nutr[,15:48], factors = 5, rotation = "promax", scores = "Bartlett")
+loads <- prova_varimax$loadings
+loads
+
+scores <- prova_varimax$scores
+# plot(prova.varimax$loadings[,1], 
+#      prova.varimax$loadings[,2],
+#      xlab = "Factor 1", 
+#      ylab = "Factor 2", 
+#      ylim = c(-1,1),
+#      xlim = c(-1,1),
+#      main = "Varimax rotation")
+# 
+# text(prova.varimax$loadings[,1]-0.08, 
+#      prova.varimax$loadings[,2]+0.08,
+#       colnames(d_nutr[,15:48]),
+#       col="blue")
+# abline(h = 0, v = 0)
+
+```
+
+#adherence
+```{r}
+adh <- as.data.frame(scores)
+adh$max <- rep(1, 365)
+for (i in 1:365){
+  adh$max[i] <- max(adh[i,c(1:5)]) 
+  #pmax(adh$Factor1,adh$Factor2,adh$Factor3,adh$Factor4,adh$Factor5) = 1
+  #replace(pmax(adh$Factor1,adh$Factor2,adh$Factor3,adh$Factor4,adh$Factor5),values= rowmax[i])
+}
+adh$Pattern <- ifelse(adh$Factor1 == adh$max, 1, 
+                      ifelse(adh$Factor2 == adh$max, 2,
+                             ifelse(adh$Factor3 == adh$max, 3,
+                                    ifelse(adh$Factor4 == adh$max, 4, 5))))
+adh
+
+table(adh$Pattern)
+```
+
+#correlation
+```{r}
+d_nutr_red <-  cbind(d_nutr[1:14], as.data.frame(scores))
+
+library(data.table)
+setnames(d_nutr_red, old = c('Factor1','Factor2','Factor3', 'Factor4', 'Factor5'), 
+         new = c("Starch_rich", "Vitamins_fiber","VUFA","AUFA", "Animal_prod"))
+d_nutr_red
+```
+
+```{r}
+library(corrplot)
+cordata <- cor(d_nutr_red[15:19],d_groups[c(15:49)]) #5X365 \times 365X34 -> 5X34
+
+cordata <- as.data.frame(cordata)
+
+cordata <- round(cordata, digits = 2)
+
+for (i in 1:5){
+  for (j in 1:34){
+    if (abs(as.numeric(cordata[i,j]) <= 0.1))
+      cordata[i,j] = "-"
+  }
+}
+
+cordata
+
+#correlation between dietary patterns and food groups
+```
+
+
+
+#PCA
+```{r}
+require("factoextra")
+require("corrplot")
+pca <- prcomp(d_nutr[15:48], scale = TRUE) 
+
+fviz_eig(pca, sum=T, addlabels = T)
+fviz_pca(pca)
+fviz_pca_ind(pca,addEllipses=TRUE, ellipse.level=0.95)
+
+# capture.output(summary(pca),
+#                file = "C:\\Users\\user\\OneDrive\\Master DSE\\NutEpiLab\\Rheumatoid_Arthritis\\pca.csv")
+
+
+var <- get_pca_var(pca)
+var
+head(var$cos2, 4)
+corrplot(var$cos2, is.corr=FALSE)
+
+
+d_nutr_low_DAS = subset(d_nutr, DAS28 <= 3.2)
+
+pca_low_DAS <- prcomp(d_nutr_low_DAS[15:48], scale = TRUE) 
+fviz_eig(pca_low_DAS, sum=T, addlabels = T)
+fviz_pca(pca_low_DAS)
+fviz_pca_ind(pca_low_DAS,addEllipses=TRUE, ellipse.level=0.95)
+summary(pca_low_DAS)
+
+
+
+d_nutr_high_DAS = subset(d_nutr, DAS28 > 3.2)
+
+pca_high_DAS <- prcomp(d_nutr_high_DAS[15:48], scale = TRUE) 
+fviz_eig(pca_high_DAS, sum=T, addlabels = T)
+fviz_pca(pca_high_DAS)
+fviz_pca_ind(pca_high_DAS,addEllipses=TRUE, ellipse.level=0.95)
+summary(pca_high_DAS)
+
+var_high <- get_pca_var(pca_high_DAS)
+var_high
+head(var_high$cos2, 4)
+corrplot(var_high$cos2, is.corr=FALSE)
+
+
+
+
+d_nutr_very_high_DAS = subset(d_nutr, DAS28 > 5.1)
+
+pca_very_high_DAS <- prcomp(d_nutr_very_high_DAS[15:48], scale = TRUE) 
+fviz_eig(pca_very_high_DAS, sum=T, addlabels = T)
+fviz_pca(pca_very_high_DAS)
+fviz_pca_ind(pca_very_high_DAS,addEllipses=TRUE, ellipse.level=0.95)
+summary(pca_very_high_DAS)
+
+
+var_very_high <- get_pca_var(pca_very_high_DAS)
+var_very_high
+head(var_very_high$cos2, 4)
+corrplot(var_very_high$cos2, is.corr=FALSE)
+
+```
+
+
+
+
+
+
+
+
+#TODO: logistic regression
+
+#TODO: different clustering methods 
